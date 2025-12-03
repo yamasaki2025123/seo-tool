@@ -11,58 +11,60 @@ export interface KeywordSuggestion {
 }
 
 /**
- * Googleサジェストキーワードを取得（簡易版）
+ * Gemini AIを使用してキーワードサジェストを取得
  */
 export async function getKeywordSuggestions(
   baseKeyword: string
 ): Promise<KeywordSuggestion[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.warn('Gemini API key not found. Using fallback suggestions.');
+    return getFallbackSuggestions(baseKeyword);
+  }
+
   try {
-    // Google Suggest APIを使用して実際のキーワード候補を取得
-    const suggestions: KeywordSuggestion[] = [];
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
-    // 基本キーワード + よく使われる接尾辞でサジェストを取得
-    const suffixes = ['', ' とは', ' 方法', ' やり方', ' 効果', ' おすすめ', ' 比較', ' 初心者', ' コツ', ' 使い方'];
+    const prompt = `あなたはSEOの専門家です。以下のキーワードに関連する、検索されやすいキーワード候補を20個提案してください。
 
-    for (const suffix of suffixes) {
-      const query = `${baseKeyword}${suffix}`;
-      try {
-        const response = await fetch(
-          `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}&hl=ja&oe=utf-8`
-        );
+基本キーワード: ${baseKeyword}
 
-        if (response.ok) {
-          const data = await response.json();
-          const keywords = data[1] as string[]; // Googleサジェストの結果
+以下の形式でJSON配列として出力してください：
+[
+  {
+    "keyword": "具体的なキーワード",
+    "searchVolume": 推定検索ボリューム（数値）,
+    "difficulty": "低" または "中" または "高"
+  }
+]
 
-          keywords.forEach((keyword: string) => {
-            // 重複チェック
-            if (!suggestions.find(s => s.keyword === keyword)) {
-              // 難易度をキーワードの長さと競合度から推定
-              const difficulty = keyword.length > 20 ? '高' : keyword.length > 10 ? '中' : '低';
+注意事項：
+- 実際に検索されそうな、具体的で実用的なキーワードを提案してください
+- 検索ボリュームは1000〜10000の範囲で推定してください
+- 難易度は競合の多さを考慮して設定してください
+- 必ず20個のキーワードを提案してください
+- JSON形式以外の説明文は含めないでください`;
 
-              suggestions.push({
-                keyword,
-                searchVolume: undefined, // Google Suggestでは検索ボリュームは取得できない
-                difficulty,
-              });
-            }
-          });
-        }
-      } catch (error) {
-        console.warn(`Failed to fetch suggestions for "${query}":`, error);
-      }
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const text = response.text();
 
-      // レート制限を避けるため、少し待機
-      await new Promise(resolve => setTimeout(resolve, 100));
+    // JSONを抽出（マークダウンのコードブロックを除去）
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      throw new Error('Failed to parse JSON from Gemini response');
     }
+
+    const suggestions = JSON.parse(jsonMatch[0]) as KeywordSuggestion[];
 
     // 最大20件に制限
     return suggestions.slice(0, 20);
 
   } catch (error) {
-    console.error('Error fetching Google Suggest data:', error);
-
-    // エラー時はモックデータにフォールバック
+    console.error('Error fetching keyword suggestions from Gemini:', error);
     return getFallbackSuggestions(baseKeyword);
   }
 }
